@@ -3,6 +3,54 @@ Self-Driving Car Engineer Nanodegree Program
 
 ---
 
+### The model
+
+The kinematic model corresponds to the one presented during the lectures and includes the following parameters:
+
+![](./images/1.JPG)
+
+* x - x coordinate
+* y - y coordinate
+* psi - orientation angle
+* v - velocity
+* cte - Cross Track Error
+* epsi - Psi Error
+
+The actuators are:
+![](./images/2.JPG)
+* delta - steering angle
+* a - acceleration
+
+In order to calculate the state at a time t+1, we use the following equations:
+
+![](./images/3.JPG)
+
+
+### Timestep Length and Elapsed Duration 
+
+The prediction horizon is the duration over which future predictions are made and it is the product of two variables:
+* N - the number of timesteps in the horizon
+* dt - the time elapsed between actuations
+
+The value for dt has been selected as 0.1, as suggested in the classes.
+
+Various values have been tested out for N with the following results:
+
+| N | result |
+| --- | --- |
+| 5 | the trajectory line was pointing in the opposite direction of the reference line |
+| 8 | the trajectory line tended to not diverge from the reference line but it was pointing in the opposite direction |
+| 10 | the trajectory line does not diverge from the reference line |
+| >10 | increased the number of calculations without real gain for the MPC |
+
+In the simulator, the yellow line corresponds to the reference line and the green line to the MPC predicted trajectory.
+
+### Polynomial Fitting and MPC Preprocessing
+
+The preprocessing implied shifting the reference angle to 90 degrees and rotating all points about the origin. The purpose of preprocessing was to simplify the polynomial fit and facilitate computations for CTE and transitions. After preprocessing, the x and y coordinates of the vehicle, along with its orientation angle, psi, where set to 0. 
+
+final the result video is []()
+
 ## Dependencies
 
 * cmake >= 3.5
