@@ -49,6 +49,10 @@ In the simulator, the yellow line corresponds to the reference line and the gree
 
 The preprocessing implied shifting the reference angle to 90 degrees and rotating all points about the origin. The purpose of preprocessing was to simplify the polynomial fit and facilitate computations for CTE and transitions. After preprocessing, the x and y coordinates of the vehicle, along with its orientation angle, psi, where set to 0. 
 
+### Model Predictive Control with Latency
+
+For dealing with latency I am predicting the future state of the vehicle using the velocity of the car with the MPC equations. I added this logic at at about line 83 in main.cpp
+
 final the result video is [https://youtu.be/-OZJeDXnI8w](https://youtu.be/-OZJeDXnI8w)
 
 ## Dependencies
