@@ -1,192 +1,265 @@
-#include <math.h>
-#include <uWS/uWS.h>
-#include <chrono>
+#include "MPC.h"
+#include <cppad/cppad.hpp>
+#include <cppad/ipopt/solve.hpp>
 #include <iostream>
 #include <string>
-#include <thread>
 #include <vector>
 #include "Eigen-3.3/Eigen/Core"
-#include "Eigen-3.3/Eigen/QR"
-#include "helpers.h"
-#include "json.hpp"
-#include "MPC.h"
 
-// for convenience
-using nlohmann::json;
-using std::string;
-using std::vector;
+using CppAD::AD;
+using Eigen::VectorXd;
 
-// For converting back and forth between radians and degrees.
-constexpr double pi() { return M_PI; }
-double deg2rad(double x) { return x * pi() / 180; }
-double rad2deg(double x) { return x * 180 / pi(); }
+/**
+ * Set the timestep length and duration
+ */
+size_t N = 10;   // timestep length
+double dt = 0.1; // duration
 
-int main() {
-  uWS::Hub h;
+// This value assumes the model presented in the classroom is used.
+//
+// It was obtained by measuring the radius formed by running the vehicle in the
+//   simulator around in a circle with a constant steering angle and velocity on
+//   a flat terrain.
+//
+// Lf was tuned until the the radius formed by the simulating the model
+//   presented in the classroom matched the previous radius.
+//
+// This is the length from front to CoG that has a similar radius.
+const double Lf = 2.67;
 
-  // MPC is initialized here!
-  MPC mpc;
+// we want the car to be exactly on the line
+double ref_cte = 0;
+double ref_epsi = 0;
+double ref_v = 70; //100;
 
-  h.onMessage([&mpc](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
-                     uWS::OpCode opCode) {
-    // "42" at the start of the message means there's a websocket message event.
-    // The 4 signifies a websocket message
-    // The 2 signifies a websocket event
-    string sdata = string(data).substr(0, length);
-    std::cout << sdata << std::endl;
-    if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
-      string s = hasData(sdata);
-      if (s != "") {
-        auto j = json::parse(s);
-        string event = j[0].get<string>();
-        if (event == "telemetry") {
-          // j[1] is the data JSON object
-          vector<double> ptsx = j[1]["ptsx"];
-          vector<double> ptsy = j[1]["ptsy"];
-          double px = j[1]["x"];
-          double py = j[1]["y"];
-          double psi = j[1]["psi"];
-          double v = j[1]["speed"];
-          double delta= j[1]["steering_angle"];
-          double a = j[1]["throttle"];
-
-          /**
-           * Calculate steering angle and throttle using MPC.
-           * Both are in between [-1, 1].
-           */
-          for (unsigned int i = 0; i < ptsx.size(); i++){
-            // shift car reference angle to 90 degrees (substract all points from current position)
-            double shift_x = ptsx[i] - px;
-            double shift_y = ptsy[i] - py;
-
-            // make psi 0
-            // rotate all the points about the origin
-            ptsx[i] = (shift_x * cos(0 - psi) - shift_y * sin(0 - psi)); 
-            ptsy[i] = (shift_x  * sin(0 - psi) + shift_y * cos(0 - psi));
-
-          }
-
-          double* ptrx = &ptsx[0];
-          Eigen::Map<Eigen::VectorXd> ptsx_transform(ptrx, 6);
-
-          double* ptry = &ptsy[0];
-          Eigen::Map<Eigen::VectorXd> ptsy_transform(ptry, 6);
-
-          auto coeffs = polyfit(ptsx_transform, ptsy_transform, 3);
-
-          // calculate CTE and Epsi
-          double cte = polyeval(coeffs, 0); // car is at 0 with angle 0
-          // epsi = psi -atan(coeffs[1] + 2 * px * coeffs[2] + 3 * coeffs[3] + pow(px, 2)) - where px and psi are both 0
-          double epsi = -atan(coeffs[1]);
-          
-          // Dealing with latency - predict all states for dt latency
-          double dt= 0.1;
-		      const double Lf = 2.67;
-          double x1=0, y1=0,  psi1=0, v1=v, cte1=cte, epsi1=epsi;	 
-          
-          // since psi is 0, the equations for states are as follows:
-          x1 += v * cos(0) * dt;
-          y1 += v * sin(0) * dt;
-          
-          delta *= -1; // since turning left is a negative value in the simulator but a positive yaw for the MPC
-       
-          psi1 += v/Lf * delta * dt;
-          v1 += a * dt;	    
-          cte1 +=  v * sin(epsi) * dt;
-          epsi1 += v * delta / Lf * dt;	  
-          
-      	  Eigen::VectorXd state(6);	  
-      	  state << x1,y1,psi1,v1,cte1,epsi1;
-
-          auto vars = mpc.Solve(state, coeffs); // we pass the coefficients in order to calculate the future CTE and epsi
-
-          // Display the waypoints/reference line
-          // used for visual debugging - yellow line in simulator
-          vector<double> next_x_vals;
-          vector<double> next_y_vals;
-
-          /**
-           * Add (x,y) points to list here, points are in reference to 
-           *   the vehicle's coordinate system the points in the simulator are 
-           *   connected by a Yellow line
-           */
-          double poly_inc = 2.5;
-          int num_points = 25; // number of point in the future to display
-          for (int i = 1; i < num_points; i++){
-            next_x_vals.push_back(poly_inc * i);
-            next_y_vals.push_back(polyeval(coeffs, poly_inc * i));
-          }
-
-          // Display the MPC predicted trajectory - green line in simulator
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
-
-          /**
-           * Add (x,y) points to list here, points are in reference to 
-           *   the vehicle's coordinate system the points in the simulator are 
-           *   connected by a Green line
-           */
-          for (unsigned int i = 2; i < vars.size(); i++){
-            if (i%2 == 0){
-              mpc_x_vals.push_back(vars[i]);
-            }
-            else{
-              mpc_y_vals.push_back(vars[i]);
-            }
-          }
-
-          json msgJson;
-          // NOTE: Remember to divide by deg2rad(25) before you send the 
-          //   steering value back. Otherwise the values will be in between 
-          //   [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = vars[0]/(deg2rad(25) * Lf);
-          msgJson["throttle"] = vars[1];
-
-          msgJson["next_x"] = next_x_vals;
-          msgJson["next_y"] = next_y_vals;
-
-          msgJson["mpc_x"] = mpc_x_vals;
-          msgJson["mpc_y"] = mpc_y_vals;
+size_t x_start = 0;
+size_t y_start = x_start + N;
+size_t psi_start = y_start + N;
+size_t v_start = psi_start + N;
+size_t cte_start = v_start + N;
+size_t epsi_start = cte_start + N;
+size_t delta_start = epsi_start + N;
+size_t a_start = delta_start + N - 1;
 
 
-          auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
-          // Latency
-          // The purpose is to mimic real driving conditions where
-          //   the car does actuate the commands instantly.
-          //
-          // Feel free to play around with this value but should be to drive
-          //   around the track with 100ms latency.
-          //
-          // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE SUBMITTING.
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-          ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-        }  // end "telemetry" if
-      } else {
-        // Manual driving
-        std::string msg = "42[\"manual\",{}]";
-        ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-      }
-    }  // end websocket if
-  }); // end h.onMessage
+class FG_eval {
+ public:
+  // Fitted polynomial coefficients
+  VectorXd coeffs;
+  FG_eval(VectorXd coeffs) { this->coeffs = coeffs; }
 
-  h.onConnection([&h](uWS::WebSocket<uWS::SERVER> ws, uWS::HttpRequest req) {
-    std::cout << "Connected!!!" << std::endl;
-  });
+  typedef CPPAD_TESTVECTOR(AD<double>) ADvector;
+  void operator()(ADvector& fg, const ADvector& vars) {
+    /**
+     * Implement MPC
+     * `fg` is a vector of the cost constraints, `vars` is a vector of variable 
+     *   values (state & actuators)
+     */
+    fg[0] = 0; // cost function
 
-  h.onDisconnection([&h](uWS::WebSocket<uWS::SERVER> ws, int code,
-                         char *message, size_t length) {
-    ws.close();
-    std::cout << "Disconnected" << std::endl;
-  });
+    // Reference State Cost
+    // define the cost related and any thing that you think beneficial
 
-  int port = 4567;
-  if (h.listen(port)) {
-    std::cout << "Listening to port " << port << std::endl;
-  } else {
-    std::cerr << "Failed to listen to port" << std::endl;
-    return -1;
+    for (unsigned int i = 0; i < N; i++){
+      fg[0] += 4000 * CppAD::pow(vars[cte_start + i] -  ref_cte, 2);
+      fg[0] += 4000 * CppAD::pow(vars[epsi_start + i] - ref_epsi, 2);
+      fg[0] += CppAD::pow(vars[v_start + i] - ref_v, 2);
+    }
+
+    for (unsigned int i = 0; i < N - 1; i++){
+      fg[0] += 1 * CppAD::pow(vars[delta_start + i], 2);
+      fg[0] += 1 * CppAD::pow(vars[a_start + i], 2);
+      // the car should not steer and accelerate at the same time
+      fg[0] += 100 * CppAD::pow(vars[a_start + i] * vars[delta_start + i], 2);
+      
+      // the car should not drive fast while turning
+      fg[0] += 100 * CppAD::pow(vars[v_start + i] * vars[delta_start + i], 2);
+    }
+
+    for (unsigned int i = 0; i < N - 2; i++){
+      fg[0] += 10000 * CppAD::pow(vars[delta_start + i + 1] - vars[delta_start + i], 2);
+      fg[0] += 50 * CppAD::pow(vars[a_start + i + 1] - vars[a_start + i], 2);
+    }
+
+    // Setup constraints
+    fg[1 + x_start] = vars[x_start];
+    fg[1 + y_start] = vars[y_start];
+    fg[1 + psi_start] = vars[psi_start];
+    fg[1 + v_start] = vars[v_start];
+    fg[1 + cte_start] = vars[cte_start];
+    fg[1 + epsi_start] = vars[epsi_start];
+
+    for ( unsigned int i = 0; i < N - 1; i++ ){
+      // values at time t + 1
+      AD<double> x1 = vars[x_start + i + 1];
+      AD<double> y1 = vars[y_start + i + 1];
+      AD<double> psi1 = vars[psi_start + i + 1];
+      AD<double> v1 = vars[v_start + i + 1];
+      AD<double> cte1 = vars[cte_start + i + 1];
+      AD<double> epsi1 = vars[epsi_start + i + 1];
+
+      // values at time t
+      AD<double> x0 = vars[x_start + i];
+      AD<double> y0 = vars[y_start + i];
+      AD<double> psi0 = vars[psi_start + i];
+      AD<double> v0 = vars[v_start + i];
+      AD<double> cte0 = vars[cte_start + i];
+      AD<double> epsi0 = vars[epsi_start + i];
+
+      AD<double> delta0 = vars[delta_start + i];
+      AD<double> a0 = vars[a_start + i];
+
+      // we calculate the polynomial value
+      AD<double> f0 = coeffs[0] + coeffs[1] * x0 + coeffs[2] * x0 * x0 + coeffs[3] * x0 * x0 * x0;
+      // desired psi value
+      AD<double> psides0 = CppAD::atan(3 * coeffs[3] * x0 * x0 + 2 * coeffs[2] * x0 + coeffs[1]);
+
+      fg[2 + x_start + i] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
+      fg[2 + y_start + i] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
+      fg[2 + psi_start + i] = psi1 - (psi0 - v0 * delta0 / Lf * dt);
+      fg[2 + v_start + i] = v1 - (v0 + a0 * dt);
+      fg[2 + cte_start + i] = cte1 - ((f0 - y0) + (v0 * CppAD::sin(epsi0) * dt));
+      fg[2 + epsi_start + i] = epsi1 - ((psi0 - psides0) - v0 * delta0 / Lf * dt);
+    }
   }
+};
+
+//
+// MPC class definition implementation.
+//
+MPC::MPC() {}
+MPC::~MPC() {}
+
+std::vector<double> MPC::Solve(const VectorXd &state, const VectorXd &coeffs) {
+  bool ok = true;
+  typedef CPPAD_TESTVECTOR(double) Dvector;
+
+  double x = state[0];
+  double y = state[1];
+  double psi = state[2];
+  double v = state[3];
+  double cte = state[4];
+  double epsi = state[5];
   
-  h.run();
+  /**
+   * Set the number of model variables (includes both states and inputs).
+   */
+  // N - number of time steps
+  // 6 elements in the state - x, y, psi, v, cte, epsi
+  // (N - 1) * 2 in order to include delta and acceleration
+  size_t n_vars = N * 6 + (N - 1) * 2;
+  /**
+   * Set the number of constraints
+   */
+  // 6 equations that are run for N time steps
+  size_t n_constraints = N * 6;
+
+  // Initial value of the independent variables.
+  // SHOULD BE 0 besides initial state.
+  Dvector vars(n_vars);
+  for ( unsigned int i = 0; i < n_vars; ++i ) {
+    vars[i] = 0;
+  }
+
+  Dvector vars_lowerbound(n_vars);
+  Dvector vars_upperbound(n_vars);
+  /**
+   * Set lower and upper limits for variables.
+   */
+
+  // Set all non-actuators upper and lower limits
+  // to the max negative and positive values.
+  for ( unsigned int i = 0; i < delta_start; i++ ) {
+    vars_lowerbound[i] = -1.0e19;
+    vars_upperbound[i] = 1.0e19;
+  }
+
+  // The upper and lower limits of delta are set to -25 to 25
+  // degrees (values in radians).
+  // transformed 25 degrees to radians
+  for ( unsigned int i = delta_start; i < a_start; i++ ) {
+    vars_lowerbound[i] = -0.436332*Lf;
+    vars_upperbound[i] = 0.43632*Lf;
+  }
+
+  // Actuator limits.
+  for ( unsigned int i = a_start; i < n_vars; i++ ) {
+    vars_lowerbound[i] = -1.0;
+    vars_upperbound[i] = 1.0;
+  }
+
+  // Lower and upper limits for the constraints
+  // Should be 0 besides initial state.
+  Dvector constraints_lowerbound(n_constraints);
+  Dvector constraints_upperbound(n_constraints);
+  for ( unsigned int i = 0; i < n_constraints; ++i) {
+    constraints_lowerbound[i] = 0;
+    constraints_upperbound[i] = 0;
+  }
+
+  constraints_lowerbound[x_start] = x;
+  constraints_lowerbound[y_start] = y;
+  constraints_lowerbound[psi_start] = psi;
+  constraints_lowerbound[v_start] = v;
+  constraints_lowerbound[cte_start] = cte;
+  constraints_lowerbound[epsi_start] = epsi;
+
+  constraints_upperbound[x_start] = x;
+  constraints_upperbound[y_start] = y;
+  constraints_upperbound[psi_start] = psi;
+  constraints_upperbound[v_start] = v;
+  constraints_upperbound[cte_start] = cte;
+  constraints_upperbound[epsi_start] = epsi;
+
+  // object that computes objective and constraints
+  FG_eval fg_eval(coeffs);
+
+  // NOTE: You don't have to worry about these options
+  // options for IPOPT solver
+  std::string options;
+  // Uncomment this if you'd like more print information
+  options += "Integer print_level  0\n";
+  // NOTE: Setting sparse to true allows the solver to take advantage
+  //   of sparse routines, this makes the computation MUCH FASTER. If you can
+  //   uncomment 1 of these and see if it makes a difference or not but if you
+  //   uncomment both the computation time should go up in orders of magnitude.
+  options += "Sparse  true        forward\n";
+  options += "Sparse  true        reverse\n";
+  // NOTE: Currently the solver has a maximum time limit of 0.5 seconds.
+  // Change this as you see fit.
+  options += "Numeric max_cpu_time          0.5\n";
+
+  // place to return solution
+  CppAD::ipopt::solve_result<Dvector> solution;
+
+  // solve the problem
+  CppAD::ipopt::solve<Dvector, FG_eval>(
+      options, vars, vars_lowerbound, vars_upperbound, constraints_lowerbound,
+      constraints_upperbound, fg_eval, solution);
+
+  // Check some of the solution values
+  ok &= solution.status == CppAD::ipopt::solve_result<Dvector>::success;
+
+  // Cost
+  auto cost = solution.obj_value;
+  std::cout << "Cost " << cost << std::endl;
+
+  /**
+   * Return the first actuator values. The variables can be accessed with
+   *   `solution.x[i]`.
+   *
+   * {...} is shorthand for creating a vector, so auto x1 = {1.0,2.0}
+   *   creates a 2 element double vector.
+   */
+  std::vector<double> result;
+
+  result.push_back(solution.x[delta_start]);
+  result.push_back(solution.x[a_start]);
+
+  for ( unsigned int i = 0; i < N - 1; i++ ) {
+    result.push_back(solution.x[x_start + i + 1]);
+    result.push_back(solution.x[y_start + i + 1]);
+  }
+  return result;
+  
 }
